@@ -6,11 +6,11 @@ export default function handler(req, res) {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "X-Requested-With");
 
-    console.log('values.randomImage(), ' + values.randomImage());
+    // console.log('values.randomImage(), ' + values.randomImage());
     resData.result = true;
     resData.data = {
         message: "welcome",
-        imageUrl: values.randomImage()
+        // imageUrl: values.randomImage()
     };
     res.send(resData);
 
