@@ -1,7 +1,11 @@
 import { formatKr } from '../../lib/date.js';
+import { supabase } from '../../lib/supabaseClient.js';
 
-export default function handler(req, res) {
+export default async function handler(req, res) {
 
+    if (req.method !== 'POST') {
+        return res.status(405).json({ message: 'Method Not Allowed' })
+    }
     function createForm() {
         return {
             "name": "",
@@ -9,7 +13,6 @@ export default function handler(req, res) {
                 "coordinates": [],
                 "type": "LineString"
             },
-            "weight": 0,
             "duration": 0,
             "distance": 1776
         };
@@ -29,6 +32,12 @@ export default function handler(req, res) {
     addForm.name = reqData.name;
     addForm.distance = reqData.distance;
     addForm.geometry.coordinates = reqData.geometry;
+    addForm.user_id = 1;
+
+    const { data: routes, error } = await supabase
+        .from('routes')
+        .insert(addForm)
+        .select()
 
     console.log('addForm', addForm);
     // routes.forEach(element => {
@@ -39,9 +48,15 @@ export default function handler(req, res) {
     // routes.forEach(element => {
     //     console.log("after names: " + element.name);
     // });
+
+    if (error) {
+        console.log("error", error);
+        return res.status(500).json({ error })
+    }
+
     resData.result = true;
     resData.data = {
         success: true
     };
-    res.send(resData);
+    return res.send(resData);
 }

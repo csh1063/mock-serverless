@@ -171,11 +171,15 @@ export default async function handler(req, res) {
 
     const { data: routes, error } = await supabase
         .from('routes')
-        .select('*')
+        .select('id, name, geometry, distance, duration, line_color, created_at')
 
     if (error) {
+        console.log('error: ' + error);
         return res.status(500).json({ error })
     }
+
+    console.log('routes: ' + routes);
+
     resData.result = true;
 
     routes.forEach(element => {
@@ -186,6 +190,6 @@ export default async function handler(req, res) {
         routes: routes,
         totalCount: routes.length
     };
-    
+
     return res.status(200).send(resData)
 }
