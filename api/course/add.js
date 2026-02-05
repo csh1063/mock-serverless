@@ -14,7 +14,8 @@ export default async function handler(req, res) {
                 "type": "LineString"
             },
             "duration": 0,
-            "distance": 1776
+            "distance": 0,
+            "line_color": ""
         };
     }
 
@@ -32,6 +33,7 @@ export default async function handler(req, res) {
     addForm.name = reqData.name;
     addForm.distance = reqData.distance;
     addForm.geometry.coordinates = reqData.geometry;
+    addForm.line_color = reqData.lineColor;
     addForm.user_id = 1;
 
     const { data: routes, error } = await supabase
