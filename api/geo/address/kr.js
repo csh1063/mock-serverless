@@ -37,7 +37,7 @@ function parseSggnm(sggnm) {
   }
 
   if (sggnm.endsWith("시")) {
-    return { city: sggnm, gu: null };
+    return { city: sggnm, gu: sggnm };
   }
 
   return { city: null, gu: sggnm };
@@ -51,7 +51,7 @@ function parseAdmNm(adm_nm) {
 
     const { city, gu } = parseSggnm(sggnm);
 
-    return { sido, city, gu, dong };
+    return { sido, city: city ?? sido, gu, dong };
 }
 
 export default async function handler(req, res) {
@@ -80,7 +80,7 @@ export default async function handler(req, res) {
       if (remaining.length === 0) break; // 전부 찾았으면 early exit
 
       const { adm_nm } = feature.properties;
-      const { sido, city, gu, dong } = parseAdmNm(sggnm);
+      const { sido, city, gu, dong } = parseAdmNm(adm_nm);
       const nextRemaining = [];
 
       for (const id of remaining) {
@@ -92,7 +92,7 @@ export default async function handler(req, res) {
           entry.locality = city; // 서울시 / 용인시
           entry.subLocality = gu; // 구 / 군
           entry.thoroughfare = dong; // 동 / 로 / 읍
-          entry.adm_nm = adm_nm; 
+        //   entry.adm_nm = adm_nm; 
           // remaining에서 제거 (nextRemaining에 안 넣음)
         } else {
           nextRemaining.push(id);
@@ -102,10 +102,14 @@ export default async function handler(req, res) {
       remaining = nextRemaining;
     }
 
+    // results는 Map이라 배열로 변환
+    // Map.values() → 이터레이터
+    // [...] → 배열로 펼치기
     // _point 제거 후 반환
+    // 구조분해로 _point만 빼고 나머지를 rest로
     const output = [...results.values()].map(({ _point, ...rest }) => rest);
 
-    return res.status(200).json({ results: output });
+    return res.status(200).json({ data: output, results: true });
 
   } catch (error) {
     console.error("Error:", error);
