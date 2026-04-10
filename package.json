@@ -12,6 +12,7 @@
   "license": "ISC",
   "dependencies": {
     "@supabase/supabase-js": "^2.93.2",
+    "@turf/turf": "^7.3.4",
     "dotenv": "^17.2.3"
   }
 }
