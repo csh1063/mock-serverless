@@ -6,7 +6,7 @@ export default async function handler(req, res) {
         return res.status(405).json({ message: 'Method Not Allowed' });
     }
 
-    const { type, content, app_version, build_number, device_model, os_version, locale } = req.body;
+    const { type, content, appVersion, buildNumber, deviceModel, osVersion, locale } = req.body;
 
     if (!type || !content) {
         return res.status(400).json({ message: 'type and content are required' });
