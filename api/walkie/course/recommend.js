@@ -1,5 +1,5 @@
-import { formatKr } from '#lib/date.js';
-import { supabase } from '#lib/supabaseClient.js';
+import { formatKr } from '#lib/date';
+import { supabase } from '#lib/supabaseClient';
 
 // export default function handler(req, res) {
 //     var reqData = req.body, resData = {};
