@@ -15,5 +15,8 @@
     "@turf/turf": "^7.3.4",
     "dotenv": "^17.2.3",
     "vercel": "^51.7.0"
+  },
+  "imports": {
+    "#lib/*": "./lib/*.js"
   }
 }
