@@ -15,10 +15,10 @@ export default async function handler(req, res) {
     const form = {
         type,
         content,
-        appVersion,
-        buildNumber,
-        deviceModel,
-        osVersion,
+        app_version: appVersion,
+        build_number: buildNumber,
+        device_model: deviceModel,
+        os_version: osVersion,
         locale
     };
 
