@@ -14,7 +14,8 @@
     "@supabase/supabase-js": "^2.93.2",
     "@turf/turf": "^7.3.4",
     "dotenv": "^17.2.3",
-    "vercel": "^54.1.0"
+    "i18n-iso-countries": "^7.14.0",
+    "vercel": "^54.6.1"
   },
   "imports": {
     "#lib/*": "./lib/*.js"
