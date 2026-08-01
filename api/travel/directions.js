@@ -60,13 +60,29 @@ export default async function handler(req, res) {
     }
 
     const route = data.routes[0];
-    const encodedPolyline = route.overview_polyline.points;
+    const leg = route.legs[0];
+
+    // 세부 구간(steps)별로 이동수단/노선타입/각 구간 폴리라인까지 추출
+    const steps = (leg.steps || []).map(step => {
+      const s = {
+        travelMode: step.travel_mode, // 'WALKING' | 'TRANSIT'
+        polyline: step.polyline.points,
+        distanceMeters: step.distance ? step.distance.value : 0,
+        durationSec: step.duration ? step.duration.value : 0,
+      };
+      if (step.travel_mode === 'TRANSIT' && step.transit_details) {
+        s.vehicleType = step.transit_details.line.vehicle.type; // 'SUBWAY','BUS','TRAM','RAIL','HEAVY_RAIL','FUNICULAR' 등
+        s.lineName = step.transit_details.line.short_name || step.transit_details.line.name || '';
+      }
+      return s;
+    });
 
     return res.status(200).json({
       status: 'OK',
-      polyline: encodedPolyline,
-      distanceMeters: route.legs[0].distance.value,
-      durationSec: route.legs[0].duration.value,
+      polyline: route.overview_polyline.points, // 하위호환용 전체 개요선
+      steps: steps, // 구간별 상세(도보/환승 포함)
+      distanceMeters: leg.distance.value,
+      durationSec: leg.duration.value,
     });
   } catch (e) {
     return res.status(500).json({ error: 'fetch failed', message: e.message });
