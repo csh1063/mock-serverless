@@ -5,35 +5,26 @@
 // Response: { "legs": [{ fromItemId,toItemId,mode,status,polyline,steps,distanceMeters,durationSec }] }
 //
 // status: "OK" | "NO_ROUTE" | "SKIPPED"
-//   - SKIPPED: noRoute:true 이거나(명시적으로 수단을 골랐는데) 도로/대중교통 경로가 의미
-//              없는 수단(기차/곤돌라/차/배 등) → 클라이언트가 점선 직선으로 대체
+//   - SKIPPED: noRoute:true 이거나 좌표가 없는 경우
 //   - NO_ROUTE: 실제 경로 탐색을 시도했지만 실패
 // 한 구간이 실패해도 배치 전체를 실패시키지 않는다.
 //
-// mode가 비어있으면(클라이언트가 특정 수단을 강제하지 않았으면) 예전엔 그냥 'walk'로
-// 찍고 걷기 경로를 구했었다 — 그래서 실제론 기차/버스를 타야 하는 먼 거리도 전부 "걷기"로
-// 나왔다. 이제 그럴 땐 직선거리를 보고 걷기/대중교통/자동차 중 실제로 되는 걸 순서대로
-// 시도해서 자동으로 가장 그럴듯한 수단을 고른다(resolveAuto).
+// 이동수단 결정 규칙(앱의 "걷기/대중교통/차" 3단계 선택과 대응):
+//   - mode === 'car' (사용자가 명시적으로 "차"를 고른 경우)만 실제 자동차 경로를 구한다.
+//   - 그 외(걷기를 골랐든, 대중교통을 골랐든, 아무것도 안 정했든)는 항상 걷기와 대중교통
+//     경로를 둘 다 구해서 비교한다 — 대중교통이 걷기보다 확실히(MIN_TRANSIT_TIME_SAVED_SEC
+//     이상) 빠를 때만 대중교통을 추천하고, 별 차이 없으면 그냥 걷기를 추천한다. "차"만 이
+//     비교에서 제외되는 이유는 차는 사용자가 이미 확정한 선택(렌트/택시 등)이라 검색이
+//     걷기와 비교해서 되돌릴 이유가 없기 때문.
 //
 // route_cache 테이블에 좌표(소수점 5자리 반올림)+수단 단위로 캐싱해서 같은 구간을
-// 여러 사용자가 반복 조회해도 Google API 쿼터를 아낀다. 자동 판단 결과는 'auto'라는
-// 별도 수단 키로 캐싱한다(실제로 뭘 골랐는지는 응답 안에 mode로 들어있음).
+// 여러 사용자가 반복 조회해도 Google API 쿼터를 아낀다. 걷기/대중교통 비교 결과는 'auto'라는
+// 별도 수단 키로 캐싱한다(실제로 뭘 골랐는지는 응답 안 mode 필드에 들어있음).
 // ===================================================================
 
 import { fetchDirections } from '#lib/directions';
 import { supabase } from '#lib/supabaseClient';
 import { verifyUser } from '#lib/verifyUser';
-
-// travel_map.html의 ROAD_MODES와 동일 — "사용자가 명시적으로 이 수단을 골랐을 때"만
-// 실제 도로/대중교통 경로를 찾는다. (자동 판단 경로는 이 목록과 무관하게 동작한다.)
-const ROUTABLE_MODES = ['walk', 'bus', 'tram', 'metro'];
-
-const MODE_TO_GOOGLE_MODE = {
-    walk: 'walking',
-    bus: 'transit',
-    tram: 'transit',
-    metro: 'transit',
-};
 
 // Google transit_details.line.vehicle.type → 우리 TransportMode rawValue.
 // TravelerAnimationEngine.mapVehicleToMode(Swift)와 동일하게 맞춘 매핑.
@@ -57,22 +48,12 @@ const VEHICLE_TO_MODE = {
     FERRY: 'boat',
 };
 
-// 이 이내 직선거리는 굳이 대중교통을 찾지 않고 바로 걷기로 시도한다.
-const WALK_MAX_METERS = 1200;
+// 대중교통이 걷기보다 이만큼(초) 이상 빨라야 "확실히 빠르다"고 보고 추천한다.
+// 이보다 적게 아끼는 거면 갈아타고 기다리느니 그냥 걷는 게 나으므로 걷기를 추천.
+const MIN_TRANSIT_TIME_SAVED_SEC = 5 * 60;
 
 function round5(n) {
     return Math.round(n * 1e5) / 1e5;
-}
-
-function haversineMeters(lat1, lng1, lat2, lng2) {
-    const toRad = (d) => (d * Math.PI) / 180;
-    const R = 6371000;
-    const dLat = toRad(lat2 - lat1);
-    const dLng = toRad(lng2 - lng1);
-    const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(a));
 }
 
 // 실제로 탄 구간(도보 제외) 중 가장 긴 구간의 수단을 그 leg의 대표 수단으로 삼는다.
@@ -132,86 +113,58 @@ async function resolveLeg(from, to) {
         return { ...base, mode: to.mode || 'walk', status: 'SKIPPED' };
     }
 
-    // 사용자가 이 항목에 수단을 명시적으로 골라뒀으면 그 선택을 그대로 존중한다 — 기존과 동일.
-    if (to.mode) {
-        if (!ROUTABLE_MODES.includes(to.mode)) {
-            return { ...base, mode: to.mode, status: 'SKIPPED' };
-        }
-        return await resolveExplicit(base, from, to, to.mode);
+    if (to.mode === 'car') {
+        return await resolveCar(base, from, to);
     }
-
-    // 수단 미지정 — 거리를 보고 실제로 되는 수단을 자동으로 찾는다.
-    return await resolveAuto(base, from, to);
+    return await resolveWalkOrTransit(base, from, to);
 }
 
-async function resolveExplicit(base, from, to, mode) {
+async function resolveCar(base, from, to) {
     const originLat = round5(from.lat);
     const originLng = round5(from.lng);
     const destLat = round5(to.lat);
     const destLng = round5(to.lng);
 
-    try {
-        const cached = await lookupCache(originLat, originLng, destLat, destLng, mode);
-        if (cached) {
-            return { ...base, mode, ...cached };
-        }
+    const cached = await lookupCache(originLat, originLng, destLat, destLng, 'car');
+    if (cached) return { ...base, mode: 'car', ...cached };
 
-        const result = await fetchDirections({
-            olat: originLat,
-            olng: originLng,
-            dlat: destLat,
-            dlng: destLng,
-            mode: MODE_TO_GOOGLE_MODE[mode],
-        });
+    const result = await tryGoogleMode(originLat, originLng, destLat, destLng, 'driving', 'car');
+    if (!result) return { ...base, mode: 'car', status: 'NO_ROUTE' };
 
-        if (result.status !== 'OK') {
-            return { ...base, mode, status: 'NO_ROUTE' };
-        }
-
-        const legResult = {
-            status: 'OK',
-            polyline: result.polyline,
-            steps: result.steps,
-            distanceMeters: result.distanceMeters,
-            durationSec: result.durationSec,
-        };
-
-        // 캐시 저장은 best-effort — 실패해도 이번 응답에는 영향 없음
-        writeCache(originLat, originLng, destLat, destLng, mode, legResult).catch(() => {});
-
-        return { ...base, mode, ...legResult };
-    } catch {
-        return { ...base, mode, status: 'NO_ROUTE' };
-    }
+    const legResult = {
+        status: 'OK',
+        polyline: result.polyline,
+        steps: result.steps,
+        distanceMeters: result.distanceMeters,
+        durationSec: result.durationSec,
+    };
+    writeCache(originLat, originLng, destLat, destLng, 'car', legResult).catch(() => {});
+    return { ...base, mode: 'car', ...legResult };
 }
 
-async function resolveAuto(base, from, to) {
+async function resolveWalkOrTransit(base, from, to) {
     const originLat = round5(from.lat);
     const originLng = round5(from.lng);
     const destLat = round5(to.lat);
     const destLng = round5(to.lng);
 
     const cached = await lookupCache(originLat, originLng, destLat, destLng, 'auto');
-    if (cached) {
-        return { ...base, ...cached };
+    if (cached) return { ...base, ...cached };
+
+    const [walkResult, transitResult] = await Promise.all([
+        tryGoogleMode(originLat, originLng, destLat, destLng, 'walking', 'walk'),
+        tryGoogleMode(originLat, originLng, destLat, destLng, 'transit', null),
+    ]);
+    if (transitResult) {
+        transitResult.mode = inferModeFromSteps(transitResult.steps);
     }
 
-    const straight = haversineMeters(from.lat, from.lng, to.lat, to.lng);
-    let resolved = null;
-
-    if (straight <= WALK_MAX_METERS) {
-        resolved = await tryGoogleMode(originLat, originLng, destLat, destLng, 'walking', 'walk');
-    }
-    if (!resolved) {
-        resolved = await tryGoogleMode(originLat, originLng, destLat, destLng, 'transit', null);
-        if (resolved) resolved.mode = inferModeFromSteps(resolved.steps);
-    }
-    if (!resolved) {
-        resolved = await tryGoogleMode(originLat, originLng, destLat, destLng, 'driving', 'car');
-    }
-    if (!resolved && straight > WALK_MAX_METERS) {
-        // 대중교통도 자동차 경로도 못 찾았으면 마지막으로 걷기라도 시도해본다.
-        resolved = await tryGoogleMode(originLat, originLng, destLat, destLng, 'walking', 'walk');
+    let resolved;
+    if (walkResult && transitResult) {
+        const timeSaved = walkResult.durationSec - transitResult.durationSec;
+        resolved = timeSaved >= MIN_TRANSIT_TIME_SAVED_SEC ? transitResult : walkResult;
+    } else {
+        resolved = walkResult || transitResult;
     }
 
     if (!resolved) {
@@ -227,7 +180,6 @@ async function resolveAuto(base, from, to) {
         durationSec: resolved.durationSec,
     };
     writeCache(originLat, originLng, destLat, destLng, 'auto', legResult).catch(() => {});
-
     return { ...base, ...legResult };
 }
 
