@@ -2,7 +2,9 @@
 // Vercel Serverless Function: 하루치 일정의 구간별 경로를 한 번에 계산
 // POST /api/travel/route/day
 // Body: { "items": [{ "id","lat","lng","mode","noRoute" }, ...] }  (이미 날짜/순서 정렬됨)
-// Response: { "legs": [{ fromItemId,toItemId,mode,status,polyline,steps,distanceMeters,durationSec }] }
+// Response: { "legs": [{ fromItemId,toItemId,mode,status,polyline,steps,distanceMeters,durationSec,alternatives }] }
+// alternatives(선택): 걷기/대중교통 비교 시 추천되지 못한 나머지 경로들 —
+//   [{ mode,polyline,distanceMeters,durationSec }] — 지도에 같이 그리기용, 애니메이션 대상 아님.
 //
 // status: "OK" | "NO_ROUTE" | "SKIPPED"
 //   - SKIPPED: noRoute:true 이거나 좌표가 없는 경우
@@ -51,6 +53,8 @@ const VEHICLE_TO_MODE = {
 // 대중교통이 걷기보다 이만큼(초) 이상 빨라야 "확실히 빠르다"고 보고 추천한다.
 // 이보다 적게 아끼는 거면 갈아타고 기다리느니 그냥 걷는 게 나으므로 걷기를 추천.
 const MIN_TRANSIT_TIME_SAVED_SEC = 5 * 60;
+// 대중교통 후보는 최대 이만큼만(걷기까지 합치면 지도에 최대 3개 경로가 그려진다).
+const MAX_TRANSIT_ALTERNATIVES = 2;
 
 function round5(n) {
     return Math.round(n * 1e5) / 1e5;
@@ -142,6 +146,11 @@ async function resolveCar(base, from, to) {
     return { ...base, mode: 'car', ...legResult };
 }
 
+// 걷기 1개 + 대중교통 후보(최대 MAX_TRANSIT_ALTERNATIVES개)를 전부 구해서, 그중 "제일
+// 추천하는" 하나를 골라 top-level(mode/polyline/steps/...)에 싣고, 나머지는 지도에 같이
+// 그릴 수 있게 alternatives 배열에 담아 함께 돌려준다. 추천 우선순위: 시간 짧은 순 → 같으면
+// 환승 적은 순으로 대중교통 중 1등을 고른 다음, 그게 걷기보다 MIN_TRANSIT_TIME_SAVED_SEC
+// 이상 안 빠르면 그냥 걷기를 추천한다.
 async function resolveWalkOrTransit(base, from, to) {
     const originLat = round5(from.lat);
     const originLng = round5(from.lng);
@@ -151,36 +160,80 @@ async function resolveWalkOrTransit(base, from, to) {
     const cached = await lookupCache(originLat, originLng, destLat, destLng, 'auto');
     if (cached) return { ...base, ...cached };
 
-    const [walkResult, transitResult] = await Promise.all([
+    const [walkResult, transitRoutes] = await Promise.all([
         tryGoogleMode(originLat, originLng, destLat, destLng, 'walking', 'walk'),
-        tryGoogleMode(originLat, originLng, destLat, destLng, 'transit', null),
+        fetchTransitAlternatives(originLat, originLng, destLat, destLng),
     ]);
-    if (transitResult) {
-        transitResult.mode = inferModeFromSteps(transitResult.steps);
+
+    const candidates = [];
+    if (walkResult) candidates.push({ ...walkResult, transferCount: 0 });
+    for (const route of transitRoutes) {
+        candidates.push({
+            mode: inferModeFromSteps(route.steps),
+            polyline: route.polyline,
+            steps: route.steps,
+            distanceMeters: route.distanceMeters,
+            durationSec: route.durationSec,
+            transferCount: Math.max(route.steps.filter((s) => s.travelMode === 'TRANSIT').length - 1, 0),
+        });
     }
 
-    let resolved;
-    if (walkResult && transitResult) {
-        const timeSaved = walkResult.durationSec - transitResult.durationSec;
-        resolved = timeSaved >= MIN_TRANSIT_TIME_SAVED_SEC ? transitResult : walkResult;
-    } else {
-        resolved = walkResult || transitResult;
-    }
-
-    if (!resolved) {
+    if (candidates.length === 0) {
         return { ...base, mode: 'walk', status: 'NO_ROUTE' };
     }
 
+    const recommended = pickRecommended(candidates, walkResult);
+    const alternatives = candidates
+        .filter((candidate) => candidate !== recommended)
+        .map((candidate) => ({
+            mode: candidate.mode,
+            polyline: candidate.polyline,
+            distanceMeters: candidate.distanceMeters,
+            durationSec: candidate.durationSec,
+        }));
+
     const legResult = {
         status: 'OK',
-        mode: resolved.mode,
-        polyline: resolved.polyline,
-        steps: resolved.steps,
-        distanceMeters: resolved.distanceMeters,
-        durationSec: resolved.durationSec,
+        mode: recommended.mode,
+        polyline: recommended.polyline,
+        steps: recommended.steps,
+        distanceMeters: recommended.distanceMeters,
+        durationSec: recommended.durationSec,
+        alternatives,
     };
     writeCache(originLat, originLng, destLat, destLng, 'auto', legResult).catch(() => {});
     return { ...base, ...legResult };
+}
+
+function pickRecommended(candidates, walkResult) {
+    const transitCandidates = candidates.filter((candidate) => candidate.mode !== 'walk');
+    if (transitCandidates.length === 0) return candidates[0];
+
+    // 시간 짧은 순, 같으면 환승 적은 순으로 대중교통 후보 중 1등을 고른다.
+    transitCandidates.sort((a, b) => a.durationSec - b.durationSec || a.transferCount - b.transferCount);
+    const bestTransit = transitCandidates[0];
+    if (!walkResult) return bestTransit;
+
+    const timeSaved = walkResult.durationSec - bestTransit.durationSec;
+    if (timeSaved >= MIN_TRANSIT_TIME_SAVED_SEC) return bestTransit;
+    return candidates.find((candidate) => candidate.mode === 'walk') || bestTransit;
+}
+
+async function fetchTransitAlternatives(originLat, originLng, destLat, destLng) {
+    try {
+        const result = await fetchDirections({
+            olat: originLat,
+            olng: originLng,
+            dlat: destLat,
+            dlng: destLng,
+            mode: 'transit',
+            alternatives: true,
+        });
+        if (result.status !== 'OK' || !result.routes) return [];
+        return result.routes.slice(0, MAX_TRANSIT_ALTERNATIVES);
+    } catch {
+        return [];
+    }
 }
 
 async function tryGoogleMode(originLat, originLng, destLat, destLng, googleMode, fixedMode) {
