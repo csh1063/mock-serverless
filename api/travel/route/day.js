@@ -53,6 +53,10 @@ const VEHICLE_TO_MODE = {
 // 대중교통이 걷기보다 이만큼(초) 이상 빨라야 "확실히 빠르다"고 보고 추천한다.
 // 이보다 적게 아끼는 거면 갈아타고 기다리느니 그냥 걷는 게 나으므로 걷기를 추천.
 const MIN_TRANSIT_TIME_SAVED_SEC = 5 * 60;
+// 걷기 시간 자체가 이 이상이면(오래 걸어야 하면), 대중교통이 5분만큼 확실히 안 빨라도
+// 그냥 대중교통을 추천한다 — 짧은 거리에서나 "5분 차이면 그냥 걷지"가 말이 되지, 오래
+// 걸어야 하는 거리에서까지 그 기준을 그대로 적용하면 안 되기 때문.
+const WALK_LONG_THRESHOLD_SEC = 25 * 60;
 // 대중교통 후보는 최대 이만큼만(걷기까지 합치면 지도에 최대 3개 경로가 그려진다).
 const MAX_TRANSIT_ALTERNATIVES = 2;
 
@@ -73,6 +77,13 @@ function inferModeFromSteps(steps) {
         }
     }
     return best || 'walk';
+}
+
+// 대중교통 경로 안에 포함된 도보 구간(역까지 걷기, 환승 중 걷기 등)의 합계 시간.
+function walkingWithinSec(steps) {
+    return (steps || [])
+        .filter((step) => step.travelMode === 'WALKING')
+        .reduce((sum, step) => sum + (step.durationSec || 0), 0);
 }
 
 export default async function handler(req, res) {
@@ -148,9 +159,16 @@ async function resolveCar(base, from, to) {
 
 // 걷기 1개 + 대중교통 후보(최대 MAX_TRANSIT_ALTERNATIVES개)를 전부 구해서, 그중 "제일
 // 추천하는" 하나를 골라 top-level(mode/polyline/steps/...)에 싣고, 나머지는 지도에 같이
-// 그릴 수 있게 alternatives 배열에 담아 함께 돌려준다. 추천 우선순위: 시간 짧은 순 → 같으면
-// 환승 적은 순으로 대중교통 중 1등을 고른 다음, 그게 걷기보다 MIN_TRANSIT_TIME_SAVED_SEC
-// 이상 안 빠르면 그냥 걷기를 추천한다.
+// 그릴 수 있게 alternatives 배열에 담아 함께 돌려준다.
+//
+// 추천 우선순위:
+//   1) 대중교통 후보끼리는 시간 짧은 순 → 환승 적은 순 → (그래도 같으면) 그 경로 안에
+//      도보 구간이 적은 순으로 1등을 고른다(같은 "대중교통"이어도 역까지 한참 걸어야
+//      하면 우선순위가 떨어진다).
+//   2) 그 1등 대중교통과 걷기를 비교한다 — 걷기가 25분 미만이면 대중교통이 5분 이상
+//      확실히 빨라야만 대중교통을 추천하고(짧은 거리에서 몇 분 아끼자고 갈아타는 건
+//      번거로움 대비 이득이 적으므로), 걷기가 25분 이상이면 대중교통이 5분씩 안
+//      아껴도(느려지지만 않으면) 대중교통을 추천한다.
 async function resolveWalkOrTransit(base, from, to) {
     const originLat = round5(from.lat);
     const originLng = round5(from.lng);
@@ -166,7 +184,7 @@ async function resolveWalkOrTransit(base, from, to) {
     ]);
 
     const candidates = [];
-    if (walkResult) candidates.push({ ...walkResult, transferCount: 0 });
+    if (walkResult) candidates.push({ ...walkResult, transferCount: 0, walkingWithinSec: walkResult.durationSec });
     for (const route of transitRoutes) {
         candidates.push({
             mode: inferModeFromSteps(route.steps),
@@ -175,6 +193,7 @@ async function resolveWalkOrTransit(base, from, to) {
             distanceMeters: route.distanceMeters,
             durationSec: route.durationSec,
             transferCount: Math.max(route.steps.filter((s) => s.travelMode === 'TRANSIT').length - 1, 0),
+            walkingWithinSec: walkingWithinSec(route.steps),
         });
     }
 
@@ -209,13 +228,22 @@ function pickRecommended(candidates, walkResult) {
     const transitCandidates = candidates.filter((candidate) => candidate.mode !== 'walk');
     if (transitCandidates.length === 0) return candidates[0];
 
-    // 시간 짧은 순, 같으면 환승 적은 순으로 대중교통 후보 중 1등을 고른다.
-    transitCandidates.sort((a, b) => a.durationSec - b.durationSec || a.transferCount - b.transferCount);
+    // 시간 짧은 순 → 환승 적은 순 → 그 안에 도보 구간 적은 순으로 대중교통 후보 중 1등을 고른다.
+    transitCandidates.sort(
+        (a, b) =>
+            a.durationSec - b.durationSec ||
+            a.transferCount - b.transferCount ||
+            a.walkingWithinSec - b.walkingWithinSec
+    );
     const bestTransit = transitCandidates[0];
     if (!walkResult) return bestTransit;
 
     const timeSaved = walkResult.durationSec - bestTransit.durationSec;
-    if (timeSaved >= MIN_TRANSIT_TIME_SAVED_SEC) return bestTransit;
+    const walkIsLong = walkResult.durationSec >= WALK_LONG_THRESHOLD_SEC;
+    // 걷기가 짧으면 대중교통이 확실히(5분 이상) 빨라야 추천하고, 걷기가 이미 길면
+    // (25분 이상) 대중교통이 느려지지만 않으면 그대로 추천한다.
+    const transitIsWorthwhile = timeSaved >= MIN_TRANSIT_TIME_SAVED_SEC || (walkIsLong && timeSaved >= 0);
+    if (transitIsWorthwhile) return bestTransit;
     return candidates.find((candidate) => candidate.mode === 'walk') || bestTransit;
 }
 
