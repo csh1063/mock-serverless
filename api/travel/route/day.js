@@ -60,8 +60,32 @@ const WALK_LONG_THRESHOLD_SEC = 25 * 60;
 // 대중교통 후보는 최대 이만큼만(걷기까지 합치면 지도에 최대 3개 경로가 그려진다).
 const MAX_TRANSIT_ALTERNATIVES = 2;
 
+// 실제 경로 길이는 두 좌표 사이 직선(대권) 거리보다 절대 짧을 수 없다 — 짧다면 구글이
+// 산악/빙하 지형처럼 실제로 걸을 수 없는 구간에서 억지로 "OK"를 반환한 것(아이거글레처→
+// 융프라우요흐 사례: 직선 3460m인데 도보 응답은 1188m). 약간의 여유(0.9)만 두고, 그보다도
+// 짧으면 그 결과를 아예 신뢰하지 않는다.
+const MIN_PLAUSIBLE_DISTANCE_RATIO = 0.9;
+
 function round5(n) {
     return Math.round(n * 1e5) / 1e5;
+}
+
+// 두 좌표 사이 대권(직선) 거리(m).
+function haversineMeters(lat1, lng1, lat2, lng2) {
+    const R = 6371000;
+    const toRad = (d) => (d * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// 구글이 돌려준 경로 거리가 물리적으로 말이 되는지(직선거리보다 짧지 않은지) 확인한다.
+function isPlausibleDistance(distanceMeters, originLat, originLng, destLat, destLng) {
+    const straight = haversineMeters(originLat, originLng, destLat, destLng);
+    return distanceMeters >= straight * MIN_PLAUSIBLE_DISTANCE_RATIO;
 }
 
 // 실제로 탄 구간(도보 제외) 중 가장 긴 구간의 수단을 그 leg의 대표 수단으로 삼는다.
@@ -144,7 +168,9 @@ async function resolveCar(base, from, to) {
     if (cached) return { ...base, mode: 'car', ...cached };
 
     const result = await tryGoogleMode(originLat, originLng, destLat, destLng, 'driving', 'car');
-    if (!result) return { ...base, mode: 'car', status: 'NO_ROUTE' };
+    if (!result || !isPlausibleDistance(result.distanceMeters, originLat, originLng, destLat, destLng)) {
+        return { ...base, mode: 'car', status: 'NO_ROUTE' };
+    }
 
     const legResult = {
         status: 'OK',
@@ -197,12 +223,24 @@ async function resolveWalkOrTransit(base, from, to) {
         });
     }
 
-    if (candidates.length === 0) {
+    // 직선거리보다 짧은(=물리적으로 불가능한) 후보는 버린다 — 아이거글레처→융프라우요흐처럼
+    // 구글이 걸을 수 없는 산악/빙하 지형에서도 "OK"로 억지 응답하는 경우가 있다. 여기서 다
+    // 걸러지면 아래 plausibleCandidates.length===0 분기로 빠져 NO_ROUTE가 되고, 클라이언트는 그 구간을
+    // (실제 경로 대신) 두 지점을 잇는 직선으로 그린다.
+    const plausibleCandidates = candidates.filter((candidate) =>
+        isPlausibleDistance(candidate.distanceMeters, originLat, originLng, destLat, destLng)
+    );
+    const plausibleWalkResult =
+        walkResult && isPlausibleDistance(walkResult.distanceMeters, originLat, originLng, destLat, destLng)
+            ? walkResult
+            : null;
+
+    if (plausibleCandidates.length === 0) {
         return { ...base, mode: 'walk', status: 'NO_ROUTE' };
     }
 
-    const recommended = pickRecommended(candidates, walkResult);
-    const alternatives = candidates
+    const recommended = pickRecommended(plausibleCandidates, plausibleWalkResult);
+    const alternatives = plausibleCandidates
         .filter((candidate) => candidate !== recommended)
         .map((candidate) => ({
             mode: candidate.mode,
