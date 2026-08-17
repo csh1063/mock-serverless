@@ -85,14 +85,10 @@ export default async function handler(req, res) {
             });
         }
 
-        // 4) 좌표/place_id 없이 이름만 뽑힌 경우라도 완전 실패보다는 이름만이라도 채워줌
-        if (parsed.name) {
-            return res.status(200).json({
-                result: true,
-                place: { name: parsed.name, lat: null, lng: null, address: null, placeId: null },
-            });
-        }
-
+        // 좌표를 하나도 못 뽑아낸 경우 — 이름만이라도 건졌다고 `result: true`로 응답하면,
+        // 클라이언트는 "성공"으로 보고 좌표 없는 place를 조용히 저장한다(이름만 채워지고 지도엔
+        // 안 찍힘). 그런 반쪽짜리 성공 대신 명확히 실패로 응답해서, 클라이언트가 "링크를
+        // 해석하지 못했어요"를 바로 보여주게 한다.
         return res.status(200).json({ result: false, error: 'unresolvable_link' });
     } catch (e) {
         return res.status(500).json({ error: 'resolve failed', message: e.message });
