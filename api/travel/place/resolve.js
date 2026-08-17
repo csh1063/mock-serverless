@@ -85,7 +85,18 @@ export default async function handler(req, res) {
             });
         }
 
-        // 좌표를 하나도 못 뽑아낸 경우 — 이름만이라도 건졌다고 `result: true`로 응답하면,
+        // 4) place_id도 좌표도 못 뽑았지만 이름(장소명+주소 텍스트, 예: q= 파라미터)은 건진
+        // 경우 — 흔히 `ftid`(ChIJ 표준 place_id가 아닌 구글 내부 식별자)만 있는 링크나 오래된
+        // 공유 링크 포맷에서 발생한다. 이름 텍스트를 그대로 좌표 없이 저장하는 대신, 그 텍스트를
+        // 검색어로 Find Place From Text API에 넘겨 실제 좌표를 찾아본다.
+        if (parsed.name) {
+            const found = await findPlaceFromText(parsed.name, apiKey);
+            if (found && found.lat != null && found.lng != null) {
+                return res.status(200).json({ result: true, place: found });
+            }
+        }
+
+        // 좌표를 끝내 하나도 못 뽑아낸 경우 — 이름만이라도 건졌다고 `result: true`로 응답하면,
         // 클라이언트는 "성공"으로 보고 좌표 없는 place를 조용히 저장한다(이름만 채워지고 지도엔
         // 안 찍힘). 그런 반쪽짜리 성공 대신 명확히 실패로 응답해서, 클라이언트가 "링크를
         // 해석하지 못했어요"를 바로 보여주게 한다.
@@ -167,6 +178,30 @@ async function fetchPlaceDetails(placeId, apiKey) {
         lng: place.geometry?.location?.lng ?? null,
         address: place.formatted_address ?? null,
         placeId,
+    };
+}
+
+// 좌표/place_id를 못 뽑은 링크에서 건진 장소명+주소 텍스트로 실제 장소(좌표 포함)를
+// 찾는다 — `ftid`만 있는 링크나 옛날 포맷 공유 링크가 이 경로를 탄다.
+async function findPlaceFromText(query, apiKey) {
+    const url =
+        `https://maps.googleapis.com/maps/api/place/findplacefromtext/json` +
+        `?input=${encodeURIComponent(query)}` +
+        `&inputtype=textquery` +
+        `&fields=place_id,name,formatted_address,geometry` +
+        `&key=${apiKey}`;
+
+    const response = await fetch(url);
+    const data = await response.json();
+    if (data.status !== 'OK' || !data.candidates?.[0]) return null;
+
+    const candidate = data.candidates[0];
+    return {
+        name: candidate.name ?? query,
+        lat: candidate.geometry?.location?.lat ?? null,
+        lng: candidate.geometry?.location?.lng ?? null,
+        address: candidate.formatted_address ?? null,
+        placeId: candidate.place_id ?? null,
     };
 }
 
