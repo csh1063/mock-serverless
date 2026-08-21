@@ -60,17 +60,12 @@ const WALK_LONG_THRESHOLD_SEC = 25 * 60;
 // 대중교통 후보는 최대 이만큼만(걷기까지 합치면 지도에 최대 3개 경로가 그려진다).
 const MAX_TRANSIT_ALTERNATIVES = 2;
 
-// 실제 경로 길이는 두 좌표 사이 직선(대권) 거리보다 절대 짧을 수 없다 — 짧다면 구글이
-// 산악/빙하 지형처럼 실제로 걸을 수 없는 구간에서 억지로 "OK"를 반환한 것(아이거글레처→
-// 융프라우요흐 사례: 직선 3460m인데 도보 응답은 1188m). 약간의 여유(0.9)만 두고, 그보다도
-// 짧으면 그 결과를 아예 신뢰하지 않는다.
 const MIN_PLAUSIBLE_DISTANCE_RATIO = 0.9;
 
 function round5(n) {
     return Math.round(n * 1e5) / 1e5;
 }
 
-// 두 좌표 사이 대권(직선) 거리(m).
 function haversineMeters(lat1, lng1, lat2, lng2) {
     const R = 6371000;
     const toRad = (d) => (d * Math.PI) / 180;
@@ -82,7 +77,6 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
     return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-// 구글이 돌려준 경로 거리가 물리적으로 말이 되는지(직선거리보다 짧지 않은지) 확인한다.
 function isPlausibleDistance(distanceMeters, originLat, originLng, destLat, destLng) {
     const straight = haversineMeters(originLat, originLng, destLat, destLng);
     return distanceMeters >= straight * MIN_PLAUSIBLE_DISTANCE_RATIO;
@@ -132,14 +126,23 @@ export default async function handler(req, res) {
         return res.status(200).json({ legs: [] });
     }
 
+    const legs = await computeDayLegs(items);
+    return res.status(200).json({ legs });
+}
+
+// 하루치 아이템 배열(이미 순서 정렬됨) → 구간별 leg 배열. 이 파일의 handler와
+// api/travel/trip/route/refresh.js(트립 단위 경로 저장 엔드포인트)가 같이 쓴다 —
+// 거리 이상치 가드(isPlausibleDistance)를 포함한 계산 로직이 한 곳에만 있어야
+// 두 경로가 서로 다르게 동작할 일이 없다.
+export async function computeDayLegs(items) {
+    if (!Array.isArray(items) || items.length < 2) return [];
     const legs = [];
     for (let i = 0; i < items.length - 1; i++) {
         const from = items[i];
         const to = items[i + 1];
         legs.push(await resolveLeg(from, to));
     }
-
-    return res.status(200).json({ legs });
+    return legs;
 }
 
 async function resolveLeg(from, to) {
@@ -223,10 +226,6 @@ async function resolveWalkOrTransit(base, from, to) {
         });
     }
 
-    // 직선거리보다 짧은(=물리적으로 불가능한) 후보는 버린다 — 아이거글레처→융프라우요흐처럼
-    // 구글이 걸을 수 없는 산악/빙하 지형에서도 "OK"로 억지 응답하는 경우가 있다. 여기서 다
-    // 걸러지면 아래 plausibleCandidates.length===0 분기로 빠져 NO_ROUTE가 되고, 클라이언트는 그 구간을
-    // (실제 경로 대신) 두 지점을 잇는 직선으로 그린다.
     const plausibleCandidates = candidates.filter((candidate) =>
         isPlausibleDistance(candidate.distanceMeters, originLat, originLng, destLat, destLng)
     );
