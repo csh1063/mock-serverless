@@ -73,7 +73,8 @@ async function handleSharedRefresh(res, shareToken, dayId) {
         return res.status(200).json({ days: [{ dayId, legs: data.legs }] });
     }
 
-    const legs = await computeDayLegs(data.items);
+    const freshLegs = await computeDayLegs(data.items);
+    const legs = mergeLegsPreservingOk(freshLegs, data.legs || []);
     await supabase.rpc('save_shared_trip_day_legs', {
         p_token: shareToken,
         p_day_id: dayId,
@@ -167,7 +168,8 @@ async function refreshDay(client, tripId, dayId, cooldownMs) {
         noRoute: item.no_route,
     }));
 
-    const legs = await computeDayLegs(requestItems);
+    const freshLegs = await computeDayLegs(requestItems);
+    const legs = mergeLegsPreservingOk(freshLegs, existing?.legs || []);
 
     await client.from('trip_route_legs').upsert({
         day_id: dayId,
@@ -182,4 +184,18 @@ async function refreshDay(client, tripId, dayId, cooldownMs) {
 function isWithinCooldown(timestamp, cooldownMs) {
     if (!timestamp) return false;
     return Date.now() - new Date(timestamp).getTime() < cooldownMs;
+}
+
+// 재계산이 실패(NO_ROUTE/SKIPPED)했는데 그 구간이 이전엔 성공(OK)으로 저장돼 있었다면,
+// 구글 API 일시 장애 등으로 방금 실패한 결과가 예전의 정상 경로를 덮어쓰지 않도록
+// 기존 값을 그대로 유지한다. 완전히 새로운 구간(예전 데이터 없음)이면 방금 계산된
+// 값을 그대로 쓴다 — 실패했어도 대체할 게 없으므로.
+function mergeLegsPreservingOk(freshLegs, existingLegs) {
+    return freshLegs.map((leg) => {
+        if (leg.status === 'OK') return leg;
+        const previousOk = existingLegs.find(
+            (prev) => prev.fromItemId === leg.fromItemId && prev.toItemId === leg.toItemId && prev.status === 'OK'
+        );
+        return previousOk || leg;
+    });
 }
