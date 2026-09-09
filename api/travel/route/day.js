@@ -136,13 +136,11 @@ export default async function handler(req, res) {
 // 두 경로가 서로 다르게 동작할 일이 없다.
 export async function computeDayLegs(items) {
     if (!Array.isArray(items) || items.length < 2) return [];
-    const legs = [];
+    const pairs = [];
     for (let i = 0; i < items.length - 1; i++) {
-        const from = items[i];
-        const to = items[i + 1];
-        legs.push(await resolveLeg(from, to));
+        pairs.push([items[i], items[i + 1]]);
     }
-    return legs;
+    return Promise.all(pairs.map(([from, to]) => resolveLeg(from, to)));
 }
 
 async function resolveLeg(from, to) {

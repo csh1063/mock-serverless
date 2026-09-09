@@ -130,13 +130,16 @@ async function handleOwnerRefresh(req, res, tripId, dayId, scope) {
         .eq('trip_id', tripId)
         .order('day_index');
 
-    const results = [];
-    for (const day of days || []) {
-        // 전체 탐색은 트립 단위 1시간 쿨다운으로 이미 걸렀으니, 날짜별 10분 쿨다운은
-        // 여기서 또 안 본다(방금 막 지났는데 "10분 전에 갱신됨"이라고 스킵되면 안 됨).
-        const legs = await refreshDay(userClient, tripId, day.id, 0);
-        results.push({ dayId: day.id, legs });
-    }
+    // 날짜별로 순차 처리하면 날짜 많은 여행에서 Vercel 함수 제한 시간을 넘기기 쉬워서
+    // 병렬로 처리한다. 전체 탐색은 트립 단위 1시간 쿨다운으로 이미 걸렀으니, 날짜별
+    // 10분 쿨다운은 여기서 또 안 본다(방금 막 지났는데 "10분 전에 갱신됨"이라고
+    // 스킵되면 안 됨).
+    const results = await Promise.all(
+        (days || []).map(async (day) => ({
+            dayId: day.id,
+            legs: await refreshDay(userClient, tripId, day.id, 0),
+        }))
+    );
 
     await userClient.from('trips').update({ last_full_route_search_at: new Date().toISOString() }).eq('id', tripId);
 
