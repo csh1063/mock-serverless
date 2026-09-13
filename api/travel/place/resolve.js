@@ -118,11 +118,23 @@ function parseGoogleMapsUrl(urlString) {
         if (placeIdMatch) result.placeId = placeIdMatch[1];
     }
 
-    // /@lat,lng,zoom 패턴
-    const atMatch = url.pathname.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-    if (atMatch) {
-        result.lat = parseFloat(atMatch[1]);
-        result.lng = parseFloat(atMatch[2]);
+    // data= 파라미터 안의 !3d<lat>!4d<lng> — 실제로 찍힌 장소(POI)의 정확한 좌표.
+    // 구글맵이 붙여주는 값이라 place_id 없이도 가장 신뢰도가 높다.
+    const pinMatch = urlString.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+    if (pinMatch) {
+        result.lat = parseFloat(pinMatch[1]);
+        result.lng = parseFloat(pinMatch[2]);
+    }
+
+    // /@lat,lng,zoom 패턴 — 이건 "장소" 좌표가 아니라 공유 시점의 지도 중심(뷰포트) 좌표라
+    // 장소를 누른 뒤 지도를 움직이고 공유하면 실제 장소와 달라질 수 있다. 위 !3d!4d를
+    // 못 찾았을 때만 최후 수단으로 사용한다.
+    if (result.lat == null) {
+        const atMatch = url.pathname.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+        if (atMatch) {
+            result.lat = parseFloat(atMatch[1]);
+            result.lng = parseFloat(atMatch[2]);
+        }
     }
 
     // query=lat,lng / q=lat,lng 폴백 (search 스타일, 구버전 단축 링크)
