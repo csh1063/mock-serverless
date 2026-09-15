@@ -5,30 +5,33 @@
 // travel_map.html이 이 URL을 익명으로 그대로 쓰고 있어서 계약(쿼리 파라미터/응답 형식)을
 // 절대 바꾸지 않는다. 실제 로직은 lib/directions.js로 옮겨서
 // api/travel/route/day.js(하루치 배치 조회)와 공유한다.
+//
+// [비활성화됨] 이제 아무도 안 쓰지만, 인증 없이 Google API 쿼터를 소모시킬 수 있는
+// 유일한 라우트라 삭제 대신 주석으로 막아둠. 필요해지면 주석만 풀면 됨.
 // ===================================================================
 
-import { fetchDirections } from '#lib/directions';
-
-export default async function handler(req, res) {
-    // CORS 허용
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-
-    const { olat, olng, dlat, dlng, mode } = req.query;
-
-    if (!olat || !olng || !dlat || !dlng) {
-        return res.status(400).json({ error: 'missing coordinates' });
-    }
-
-    try {
-        const result = await fetchDirections({ olat, olng, dlat, dlng, mode });
-        return res.status(200).json(result);
-    } catch (e) {
-        return res.status(500).json({ error: 'fetch failed', message: e.message });
-    }
-}
+// import { fetchDirections } from '#lib/directions';
+//
+// export default async function handler(req, res) {
+//     // CORS 허용
+//     res.setHeader('Access-Control-Allow-Origin', '*');
+//     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+//     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+//
+//     if (req.method === 'OPTIONS') {
+//         return res.status(200).end();
+//     }
+//
+//     const { olat, olng, dlat, dlng, mode } = req.query;
+//
+//     if (!olat || !olng || !dlat || !dlng) {
+//         return res.status(400).json({ error: 'missing coordinates' });
+//     }
+//
+//     try {
+//         const result = await fetchDirections({ olat, olng, dlat, dlng, mode });
+//         return res.status(200).json(result);
+//     } catch (e) {
+//         return res.status(500).json({ error: 'fetch failed', message: e.message });
+//     }
+// }
